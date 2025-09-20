@@ -18,7 +18,6 @@ def verify(sid,pwd0,env):
         soup = BeautifulSoup(init.text, 'html.parser')
         salt = soup.find('p', id="login-croypto").get_text()
         execution = soup.find('p', id="login-page-flowkey").get_text()
-        captcha = soup.find('p', id="captcha-url").get_text()
         pwd = encrypt_password(pwd0, salt)
         data = {
             "username": sid,
@@ -59,9 +58,7 @@ def verify(sid,pwd0,env):
             return None
         else:
             print('网络错误，请重试！')
-            input()
-            exit(0)
+            return None
     except:
         print('网络错误，请重试！')
-        input()
-        exit(0)
+        return None
