@@ -4,7 +4,7 @@ from getpass import getpass
 from verify import verify
 from urllib.parse import urlencode
 from sys import exit
-
+from time_msg import time_msg
 
 pre = ['https://xk.bit.edu.cn/',
        'https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e8fc0f9e2e2426557a1dc7af96/']
@@ -13,16 +13,16 @@ pre = ['https://xk.bit.edu.cn/',
 def check_net():
     try:
         requests.get("https://xk.bit.edu.cn/xsxkapp/sys/xsxkapp/*default/index.do")
-        print('检测到当前为校内环境')
+        print(time_msg('检测当前为校内环境'))
         return 0
     except:
         try:
             requests.get(
                 "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e8fc0f9e2e2426557a1dc7af96/xsxkapp/sys/xsxkapp/*default/index.do")
-            print('检测到当前为校外环境')
+            print(time_msg('检测到当前为校外环境'))
             return 1
         except:
-            print('当前未连接网络，程序已退出')
+            print(time_msg('当前未连接网络，程序已退出'))
             exit(0)
 
 
@@ -37,20 +37,20 @@ def get_info(headers, cookies, env, user):
     collage = data['data']['collegeName']
     department = data['data']['departmentName']
     school_class = data['data']['schoolClass']
-    print('个人信息如下：')
-    print('姓名：' + name)
-    print('学号：' + user)
-    print('年级：' + grade)
-    print('校区：' + campus)
-    print('学院：' + collage)
-    print('专业：' + department)
-    print('班级：' + school_class)
+    print(time_msg('个人信息如下：'))
+    print(time_msg('姓名：' + name))
+    print(time_msg('学号：' + user))
+    print(time_msg('年级：' + grade))
+    print(time_msg('校区：' + campus))
+    print(time_msg('学院：' + collage))
+    print(time_msg('专业：' + department))
+    print(time_msg('班级：' + school_class))
     for batch in data['data']['electiveBatchList']:
         if batch['canSelect'] == '1':
             batch_code = batch['code']
-            print('当前阶段：' + batch['schoolTermName'] + ' ' + batch['name'])
-            print('开始时间：' + batch['beginTime'])
-            print('结束时间：' + batch['endTime'])
+            print(time_msg('当前阶段：' + batch['schoolTermName'] + ' ' + batch['name']))
+            print(time_msg('开始时间：' + batch['beginTime']))
+            print(time_msg('结束时间：' + batch['endTime']))
             return batch_code
 
 
@@ -80,7 +80,7 @@ def first_query(env, headers, cookies, batch_code, user):
     try:
         course_text = open('courses.txt', 'r', encoding='utf-8').readlines()
     except FileNotFoundError:
-        print('course.txt 文件未找到！')
+        print(time_msg('course.txt 文件未找到，程序已退出'))
         exit(0)
     course_list = {}
     for search_name in course_text:
@@ -88,9 +88,9 @@ def first_query(env, headers, cookies, batch_code, user):
         idx = query_course(env, headers, cookies, search_name, batch_code, user)
         for i in idx:
             course_list[i[0]] = i[1]
-    print('当前不冲突的课程：')
+    print(time_msg('当前不冲突的课程：'))
     for id, name in course_list.items():
-        print(id, name)
+        print(time_msg(id, name))
     return course_list
 
 
@@ -112,20 +112,20 @@ def choose_course(env, headers, cookies, batch_code, user, id, name):
         choose_url = pre[env] + 'xsxkapp/sys/xsxkapp/elective/volunteer.do'
         choose = requests.post(choose_url, headers=headers, cookies=cookies, params=addparam)
         if '成功' in choose.json()['msg']:
-            print('已选中 [{:s}] {:s} 课程'.format(id, name))
+            print(time_msg('已选中 [{:s}] {:s} 课程'.format(id, name)))
 
 
 def main():
-    print("----- BIT 抢课系统 -----")
-    print("请将意愿课程名加入同目录下 course.txt 文件（支持关键字搜索）")
+    print(time_msg("BIT 本科生抢课系统已启动"))
+    print(time_msg("请将意愿课程名加入同目录下 course.txt 文件（支持公选课和体育课）"))
     env = check_net()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0',
         'Content-Type': 'application/json'}
     cookies = {}
     while True:
-        user = input('学号：')
-        pwd0 = getpass('密码：')
+        user = input(time_msg('学号：'))
+        pwd0 = getpass(time_msg('密码：'))
         res = verify(user, pwd0, env)
         if res:
             token, cookies = res
@@ -138,21 +138,21 @@ def main():
             if first:
                 batch_code = get_info(headers, cookies, env, user)
                 course_list = first_query(env, headers, cookies, batch_code, user)
-                flag = input('是否开始抢课？(y/n)')
+                flag = input(time_msg('是否开始抢课？(y/n)'))
                 if flag != 'y' and flag != 'Y':
                     break
             else:
                 token, cookies = verify(user, pwd0, env)
                 headers['Token'] = token
-            print('正在查询课程中...请保持程序运行（按Ctrl+C退出）')
+            print(time_msg('正在查询课程中...请保持程序运行（按Ctrl+C退出）'))
             while True:
                 for id, name in course_list.items():
                     choose_course(env, headers, cookies, batch_code, user, id, name)
         except KeyboardInterrupt:
-            print('已停止查询课程')
+            print(time_msg('已停止查询课程，程序已退出'))
             exit(0)
         except:
-            print('尝试重新登录中...')
+            print(time_msg('尝试重新登录中...'))
             first = False
             pass
 

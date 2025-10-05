@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from encrypt import encrypt_password
 from urllib.parse import urlencode
 from urllib.parse import parse_qs, urlparse
+from time_msg import time_msg
 def verify(sid,pwd0,env):
     if env == 0:
         url = 'https://sso.bit.edu.cn/cas/login?service=https:%2F%2Fxk.bit.edu.cn%2Fxsxkapp%2Fsys%2Fxsxkapp%2FbitXsxkLogin%2FcasLogin.do'
@@ -32,7 +33,7 @@ def verify(sid,pwd0,env):
         }
         login=requests.post(url,headers=headers,cookies=cookies,data=urlencode(data))
         if login.status_code==200:
-            print('统一身份认证成功！')
+            print(time_msg('统一身份认证成功！'))
             if env == 0:
                 cookies.clear()
             if login.history:
@@ -51,14 +52,14 @@ def verify(sid,pwd0,env):
             cookies.update(reg.cookies.get_dict())
             name = reg.json()['data']['name']
             token = reg.json()['data']['token']
-            print('选课网站登录成功，当前登录用户：{:s}'.format(name))
+            print(time_msg('选课网站登录成功，当前登录用户：{:s}'.format(name)))
             return token,cookies
         elif login.status_code == 401:
-            print('身份认证失败！请检查账号密码是否错误')
+            print(time_msg('身份认证失败！请检查账号密码是否错误'))
             return None
         else:
-            print('网络错误，请重试！')
+            print(time_msg('网络错误，请重试！'))
             return None
     except:
-        print('网络错误，请重试！')
+        print(time_msg('网络错误，请重试！'))
         return None
