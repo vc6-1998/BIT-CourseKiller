@@ -78,7 +78,7 @@ def query_course(env, headers, cookies, search_name, batch_code, user):
 
 def first_query(env, headers, cookies, batch_code, user):
     try:
-        course_text = open('courses.txt', 'r', encoding='utf-8').readlines()
+        course_text = open('course.txt', 'r', encoding='utf-8').readlines()
     except FileNotFoundError:
         print(time_msg('course.txt 文件未找到，程序已退出'))
         exit(0)
@@ -117,7 +117,7 @@ def choose_course(env, headers, cookies, batch_code, user, id, name):
 
 def main():
     print(time_msg("BIT 本科生抢课系统已启动"))
-    print(time_msg("请将意愿课程名加入同目录下 course.txt 文件（支持公选课和体育课）"))
+    print(time_msg("请将意愿课程名加入同目录下 course.txt 文件"))
     env = check_net()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0',
