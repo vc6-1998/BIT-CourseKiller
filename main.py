@@ -87,10 +87,11 @@ def first_query(env, headers, cookies, batch_code, user):
         search_name = search_name.strip()
         idx = query_course(env, headers, cookies, search_name, batch_code, user)
         for i in idx:
-            course_list[i[0]] = i[1]
+            if i[1] == search_name:
+                course_list[i[0]] = i[1]
     print(time_msg('当前不冲突的课程：'))
     for id, name in course_list.items():
-        print(time_msg(id, name))
+        print(time_msg(id + ' ' + name))
     return course_list
 
 
@@ -125,8 +126,10 @@ def main():
     cookies = {}
     while True:
         user = input(time_msg('学号：'))
-        pwd0 = getpass(time_msg('密码：'))
+        # pwd0 = getpass(time_msg('密码：'))
+        pwd0 = input(time_msg('密码：'))
         res = verify(user, pwd0, env)
+
         if res:
             token, cookies = res
             headers['Token'] = token
@@ -151,10 +154,10 @@ def main():
         except KeyboardInterrupt:
             print(time_msg('已停止查询课程，程序已退出'))
             exit(0)
-        except:
+        except Exception as e:
             print(time_msg('尝试重新登录中...'))
             first = False
-            pass
+            print(e)
 
 
 if __name__ == '__main__':
