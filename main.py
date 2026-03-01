@@ -126,8 +126,7 @@ def main():
     cookies = {}
     while True:
         user = input(time_msg('学号：'))
-        # pwd0 = getpass(time_msg('密码：'))
-        pwd0 = input(time_msg('密码：'))
+        pwd0 = getpass(time_msg('密码：'))
         res = verify(user, pwd0, env)
 
         if res:
