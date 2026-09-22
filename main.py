@@ -190,7 +190,11 @@ def login(mode, expected_user=None, password=None):
             save_login_session(mode, user, token, cookies)
             return user, password, create_course_session(token, cookies)
 
-    user = expected_user or input(time_msg("学号：")).strip()
+    user = expected_user or (saved["user"] if saved else None)
+    if not user:
+        user = input(time_msg("学号：")).strip()
+    else:
+        print(time_msg(f"学号：{user}（来自本地会话）"))
     while True:
         current_password = password or getpass(time_msg("密码："))
         login_result = verify(user, current_password, mode=mode)
@@ -198,6 +202,7 @@ def login(mode, expected_user=None, password=None):
             token, cookies = login_result
             save_login_session(mode, user, token, cookies)
             return user, current_password, create_course_session(token, cookies)
+        print(time_msg("本次认证未成功，请根据上方具体阶段检查后重试"))
         password = None
 
 

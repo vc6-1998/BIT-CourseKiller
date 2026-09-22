@@ -1,10 +1,11 @@
 import json
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
+from Crypto.Cipher import AES
 
-from encrypt import encrypt_password
+from sso_client import BitSsoClient, SsoError
 from time_msg import time_msg
 
 
@@ -17,10 +18,7 @@ VPN_COURSE_BASE_URL = (
     "/xsxkapp/sys/xsxkapp"
 )
 DIRECT_CAS_LOGIN_URL = "https://sso.bit.edu.cn/cas/login"
-VPN_SSO_BASE_URL = (
-    "https://webvpn.bit.edu.cn/https/"
-    "77726476706e69737468656265737421e3e44ed225397c1e7b0c9ce29b5b"
-)
+WEBVPN_LOGIN_URL = "https://webvpn.bit.edu.cn/login?cas_login=true"
 COURSE_LOGIN_URL = f"{DIRECT_COURSE_BASE_URL}/bitXsxkLogin/casLogin.do"
 REQUEST_TIMEOUT = 15
 USER_AGENT = (
@@ -38,28 +36,6 @@ def course_base_url(mode):
     raise ValueError(f"未知网络模式：{mode}")
 
 
-def _cas_login_url(mode):
-    return DIRECT_CAS_LOGIN_URL if mode == MODE_DIRECT else f"{VPN_SSO_BASE_URL}/cas/login"
-
-
-def _sso_base_url(mode):
-    return "https://sso.bit.edu.cn" if mode == MODE_DIRECT else VPN_SSO_BASE_URL
-
-
-def _sso_query_suffix(mode):
-    return "" if mode == MODE_DIRECT else "?vpn-12-o2-sso.bit.edu.cn"
-
-
-def _fingerprint_url(mode):
-    if mode == MODE_DIRECT:
-        return "https://sso.bit.edu.cn/ustc-rba-front/fp"
-    return f"{VPN_SSO_BASE_URL}/ustc-rba-front/fp?vpn-12-o2-sso.bit.edu.cn"
-
-
-def _register_url(mode):
-    return f"{course_base_url(mode)}/student/register.do"
-
-
 def _new_session(cookies=None):
     session = requests.Session()
     session.trust_env = False
@@ -69,54 +45,28 @@ def _new_session(cookies=None):
     return session
 
 
-def _page_value(soup, element_id, default=None):
-    element = soup.find(id=element_id)
-    if element is None:
-        if default is not None:
-            return default
-        raise ValueError(f"登录页缺少字段：{element_id}")
-    value = element.get("value")
-    if value is None:
-        value = element.get_text()
-    value = value.strip()
-    if not value and default is None:
-        raise ValueError(f"登录页字段为空：{element_id}")
-    return value or default
-
-
-def _get_risk_token(session, mode):
-    fingerprint = {
-        "fonts": "error",
-        "deviceMemory": "error",
-        "hardwareConcurrency": "error",
-        "localgroupId": "error",
-        "timezone": "error",
-        "cpuClass": "error",
-        "platform": "error",
-        "language": "error",
-        "screenResolution": "error",
-        "fingerprint": "error",
-        "cookieValue": "error",
-        "userAgent": USER_AGENT,
-        "platformAuthenticator": "error",
-    }
-    response = session.post(
-        _fingerprint_url(mode), json=fingerprint, timeout=REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
-    token = response.json().get("responsetoken")
-    if not token:
-        raise ValueError("风控接口未返回 responsetoken")
-    return token
-
-
 def _extract_login_key(url):
     return parse_qs(urlparse(url).query).get("bitXsxkLogin", [None])[0]
 
 
+def _extract_login_key_from_response(response):
+    candidates = list(getattr(response, "history", ()) or ()) + [response]
+    for item in candidates:
+        urls = [str(getattr(item, "url", "") or "")]
+        headers = getattr(item, "headers", {}) or {}
+        location = headers.get("Location")
+        if location:
+            urls.append(urljoin(urls[0], str(location)))
+        for url in urls:
+            key = _extract_login_key(url)
+            if key:
+                return key
+    return None
+
+
 def _register(session, mode, login_key):
     response = session.get(
-        _register_url(mode),
+        f"{course_base_url(mode)}/student/register.do",
         params={"number": login_key},
         timeout=REQUEST_TIMEOUT,
     )
@@ -132,141 +82,158 @@ def _register(session, mode, login_key):
     return token, session.cookies.copy()
 
 
-def _form_data(form):
-    data = {}
-    for element in form.find_all(["input", "button"]):
-        name = element.get("name")
-        if name:
-            data[name] = element.get("value", "")
-    return data
+def _encode_vpn_host(host):
+    """WebVPN 使用的 AES-反馈编码，和 BIT-Login-Python 保持一致。"""
+    key = b"wrdvpnisthebest!"
+    iv = b"wrdvpnisthebest!"
+    text_len = len(host)
+    padded = host + "0" * ((16 - text_len % 16) % 16)
+    cipher = AES.new(key, AES.MODE_ECB)
+    feedback = bytearray(iv)
+    output = bytearray()
+    for offset in range(0, len(padded), 16):
+        stream = cipher.encrypt(bytes(feedback))
+        block = bytes(
+            ord(padded[offset + index]) ^ stream[index]
+            for index in range(min(16, len(padded) - offset))
+        )
+        output.extend(block)
+        feedback = bytearray(block)
+    return iv.hex() + bytes(output).hex()[: text_len * 2]
 
 
-def _complete_sms_verification(session, login_response, mode):
-    soup = BeautifulSoup(login_response.text, "html.parser")
-    sms_form = soup.find(id="secondSmsLoginForm")
-    if sms_form is None:
-        return None
-
-    phone = _page_value(soup, "phone-number")
-    send_response = session.post(
-        f"{_sso_base_url(mode)}/cas/api/protected/sms/publicNoToken/sendSmsCode"
-        f"{_sso_query_suffix(mode)}",
-        json={"phone": phone, "businessNo": "0008"},
-        timeout=REQUEST_TIMEOUT,
+def _convert_to_webvpn_url(original_url):
+    parsed = urlparse(original_url)
+    if not parsed.hostname:
+        return original_url
+    encoded_host = _encode_vpn_host(parsed.hostname)
+    path = f"/{parsed.scheme}/{encoded_host}{parsed.path}"
+    return urlunparse(
+        (
+            "https",
+            "webvpn.bit.edu.cn",
+            path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
     )
-    send_response.raise_for_status()
-    send_data = send_response.json()
-    if str(send_data.get("code")) != "200":
-        message = (send_data.get("data") or {}).get("errorMessage")
-        raise ValueError(message or "短信验证码发送失败")
 
+
+def _sms_callback(masked_phone):
     print(time_msg("统一身份认证已发送短信验证码"))
     while True:
-        sms_code = input(time_msg("短信验证码：")).strip()
-        if len(sms_code) != 6 or not sms_code.isdigit():
-            print(time_msg("请输入 6 位数字验证码"))
-            continue
-        check_response = session.post(
-            f"{_sso_base_url(mode)}/cas/api/protected/sms/checkToken"
-            f"{_sso_query_suffix(mode)}",
-            json={
-                "phone": phone,
-                "token": sms_code,
-                "delete": False,
-                "trustDevice": True,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        check_response.raise_for_status()
-        check_data = check_response.json()
-        if str(check_data.get("code")) == "200":
-            break
-        message = (check_data.get("data") or {}).get("errorMessage")
-        print(time_msg(message or "短信验证码错误，请重试"))
-
-    data = _form_data(sms_form)
-    data.update(
-        {
-            "password": sms_code,
-            "type": "smsLogin",
-            "_eventId": "submit",
-            "geolocation": "",
-            "trustDevice": "true",
-        }
-    )
-    response = session.post(
-        _cas_login_url(mode),
-        data=data,
-        timeout=REQUEST_TIMEOUT,
-        allow_redirects=True,
-    )
-    response.raise_for_status()
-    return response
+        code = input(time_msg(f"短信验证码（{masked_phone or '绑定手机'}）：")).strip()
+        if len(code) == 6 and code.isdigit():
+            return code
+        print(time_msg("请输入 6 位数字验证码"))
 
 
-def verify(sid=None, password=None, mode=MODE_DIRECT, cookies=None):
-    session = _new_session(cookies)
-    try:
-        init = session.get(
-            _cas_login_url(mode),
+def _failure_message(response):
+    if response is None:
+        return "没有收到统一认证响应"
+    soup = BeautifulSoup(response.text or "", "html.parser")
+    for element_id in ("login-error-msg", "login-error-code", "errorMsg"):
+        element = soup.find(id=element_id)
+        if element is not None:
+            message = element.get_text(" ", strip=True)
+            if message:
+                return message
+    if soup.find(id="phone-number") is not None:
+        return "检测到短信二次认证页面，但认证没有完成"
+    if soup.find(id="login-croypto") is not None:
+        return "统一身份认证仍停留在登录页，可能是密码错误、风控拦截或需要验证码"
+    title = soup.title.get_text(" ", strip=True) if soup.title else "未知页面"
+    return f"未识别统一身份认证返回页面：{title}"
+
+
+def _probe_existing_session(session, mode):
+    if mode == MODE_DIRECT:
+        return session.get(
+            DIRECT_CAS_LOGIN_URL,
             params={"service": COURSE_LOGIN_URL},
             timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
         )
-        init.raise_for_status()
+    return session.get(
+        f"{VPN_COURSE_BASE_URL}/*default/index.do",
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True,
+    )
 
-        login_key = _extract_login_key(init.url)
+
+def _login_direct(session, sid, password):
+    client = BitSsoClient(session, timeout=REQUEST_TIMEOUT)
+    return client.login_password(
+        sid,
+        password,
+        service=COURSE_LOGIN_URL,
+        sms_callback=_sms_callback,
+        trust_device=False,
+        follow_redirects=True,
+    )
+
+
+def _login_webvpn(session, sid, password):
+    """先拿业务 ticket，再建立 WebVPN 网关会话，最后访问包装后的回调。"""
+    client = BitSsoClient(session, timeout=REQUEST_TIMEOUT)
+    target_response = client.login_password(
+        sid,
+        password,
+        service=COURSE_LOGIN_URL,
+        sms_callback=_sms_callback,
+        trust_device=False,
+        follow_redirects=False,
+    )
+    target_callback = client.callback_from_response(target_response, COURSE_LOGIN_URL)
+
+    gateway_response = client.login_password(
+        sid,
+        password,
+        service=WEBVPN_LOGIN_URL,
+        sms_callback=_sms_callback,
+        trust_device=False,
+        follow_redirects=False,
+    )
+    gateway_callback = client.callback_from_response(gateway_response, WEBVPN_LOGIN_URL)
+    session.get(gateway_callback, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+
+    return session.get(
+        _convert_to_webvpn_url(target_callback),
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True,
+    )
+
+
+def verify(sid=None, password=None, mode=MODE_DIRECT, cookies=None):
+    session = _new_session(cookies)
+    stage = "初始化统一身份认证"
+    login_response = None
+    try:
+        init = _probe_existing_session(session, mode)
+        login_key = _extract_login_key_from_response(init)
         if login_key:
             print(time_msg("已使用本地会话通过统一身份认证"))
             return _register(session, mode, login_key)
         if not sid or password is None:
             return None
 
-        soup = BeautifulSoup(init.text, "html.parser")
-        salt = _page_value(soup, "login-croypto")
-        execution = _page_value(soup, "login-page-flowkey")
-        risk_engine = _page_value(soup, "riskSystemSwitch", "USTC")
-        site_id = _page_value(soup, "siteId", "sourceId")
-        target_system = _page_value(soup, "targetSystem", "sso")
-        risk_token = _get_risk_token(session, mode)
-        risk_data = json.dumps(
-            {"token": risk_token, "groupId": ""},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        data = {
-            "username": sid,
-            "type": "UsernamePassword",
-            "_eventId": "submit",
-            "geolocation": "",
-            "execution": execution,
-            "captcha_code": "",
-            "croypto": salt,
-            "password": encrypt_password(password, salt),
-            "captcha_payload": encrypt_password("{}", salt),
-            "risk_payload": encrypt_password(risk_data, salt),
-            "targetSystem": target_system,
-            "siteId": site_id,
-            "riskEngine": risk_engine,
-        }
-        login = session.post(
-            init.url,
-            data=data,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-        login.raise_for_status()
+        stage = "提交统一身份认证账号密码"
+        if mode == MODE_DIRECT:
+            login_response = _login_direct(session, sid, password)
+        elif mode == MODE_WEBVPN:
+            login_response = _login_webvpn(session, sid, password)
+        else:
+            raise ValueError(f"未知网络模式：{mode}")
 
-        login_key = _extract_login_key(login.url)
+        login_key = _extract_login_key_from_response(login_response)
         if not login_key:
-            login = _complete_sms_verification(session, login, mode)
-            login_key = _extract_login_key(login.url) if login else None
-        if not login_key:
-            print(time_msg("身份认证失败，请检查账号密码或额外验证要求"))
+            print(time_msg("身份认证失败：" + _failure_message(login_response)))
             return None
 
         print(time_msg("统一身份认证成功！"))
+        stage = "注册选课系统登录状态"
         return _register(session, mode, login_key)
-    except (requests.RequestException, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(time_msg(f"登录失败：{error}"))
+    except (requests.RequestException, SsoError, ValueError, KeyError, json.JSONDecodeError) as error:
+        print(time_msg(f"{stage}失败：{error}"))
         return None
