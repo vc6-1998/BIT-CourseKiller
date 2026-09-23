@@ -634,9 +634,8 @@ def run_courses(mode, user, password, session, batch_code, campus_code):
                 print(time_msg("全部目标课程均已选中，程序已退出"))
                 return
             time.sleep(COURSE_SCAN_INTERVAL)
-        except (LoginExpiredError, requests.RequestException) as error:
-            print(time_msg(f"连接或登录状态异常：{error}"))
-            print(time_msg("尝试恢复本地会话或重新登录..."))
+        except LoginExpiredError:
+            print(time_msg("登录状态已失效，尝试恢复会话..."))
             while True:
                 try:
                     user, password, session = login(
@@ -645,9 +644,10 @@ def run_courses(mode, user, password, session, batch_code, campus_code):
                     needs_resolution = True
                     announced = False
                     break
-                except requests.RequestException as login_error:
-                    print(time_msg(f"登录线路仍不可用：{login_error}"))
-                    time.sleep(3)
+                except Exception:
+                    print(time_msg("恢复登录失败，继续重试..."))
+        except Exception:
+            print(time_msg("本轮请求出现临时异常，继续查询..."))
 
 def main():
     print(time_msg("BIT 本科生抢课系统已启动"))
