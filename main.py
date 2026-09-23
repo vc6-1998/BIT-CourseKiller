@@ -593,14 +593,25 @@ def validate_targets_online(session, user, batch_code, campus_code, config):
 
 
 def run_courses(mode, user, password, session, batch_code, campus_code):
-    specs = load_course_specs()
+    specs = None
     config = {"courses": []}
     needs_resolution = True
     needs_validation = True
     confirmed = False
     announced = False
+    needs_login = False
     while True:
         try:
+            if needs_login:
+                user, password, session = login(
+                    mode, expected_user=user, password=password
+                )
+                needs_login = False
+                needs_resolution = True
+                needs_validation = True
+                announced = False
+            if specs is None:
+                specs = load_course_specs()
             if needs_resolution:
                 config["courses"] = resolve_course_targets(
                     session, user, batch_code, campus_code, specs
@@ -634,34 +645,26 @@ def run_courses(mode, user, password, session, batch_code, campus_code):
                 print(time_msg("全部目标课程均已选中，程序已退出"))
                 return
             time.sleep(COURSE_SCAN_INTERVAL)
-        except LoginExpiredError:
-            print(time_msg("登录状态已失效，尝试恢复会话..."))
-            while True:
-                try:
-                    user, password, session = login(
-                        mode, expected_user=user, password=password
-                    )
-                    needs_resolution = True
-                    announced = False
-                    break
-                except Exception:
-                    print(time_msg("恢复登录失败，继续重试..."))
-        except Exception:
-            print(time_msg("本轮请求出现临时异常，继续查询..."))
+        except KeyboardInterrupt:
+            raise
+        except BaseException:
+            print(time_msg("运行中出现异常，尝试重新登录并继续..."))
+            needs_login = True
 
 def main():
     print(time_msg("BIT 本科生抢课系统已启动"))
-    try:
-        mode = check_net()
-        user, password, session = login(mode)
-        batch_code, campus_code = get_info(session, user)
-        run_courses(mode, user, password, session, batch_code, campus_code)
-    except KeyboardInterrupt:
-        print(time_msg("操作已取消，程序已退出"))
-    except (RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(time_msg(f"程序停止：{error}"))
-    except requests.RequestException as error:
-        print(time_msg(f"网络请求失败：{error}"))
+    while True:
+        try:
+            mode = check_net()
+            user, password, session = login(mode)
+            batch_code, campus_code = get_info(session, user)
+            run_courses(mode, user, password, session, batch_code, campus_code)
+            return
+        except KeyboardInterrupt:
+            print(time_msg("操作已取消，程序已退出"))
+            return
+        except BaseException as error:
+            print(time_msg("程序遇到临时异常，继续运行..."))
 
 
 if __name__ == "__main__":
